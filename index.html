@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QR and Barcode Scanner</title>
+    <script src="https://unpkg.com/@zxing/library@latest"></script>
+    <style>
+        #zoom-slider {
+            width: 300px; /* adjust as necessary */
+        }
+
+        .scanner-container {
+            position: relative;
+            display: inline-block;
+        }
+
+        .error-message {
+            color: red;
+            font-weight: bold;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>QR and Barcode Scanner</h1>
+
+    <div class="section">
+        <h2>Live QR and Barcode Scanning</h2>
+        <div class="scanner-container">
+            <video id="qr-video" playsinline width="500" height="300"></video>
+        </div>
+        <label>Zoom:</label>
+        <input type="range" id="zoom-slider" min="1" max="7" step="0.1" value="3">
+        <label><input type="checkbox" id="auto-zoom-checkbox"> Auto Adjust Zoom</label>
+        <label><input type="checkbox" id="torch-checkbox"> Enable Torch</label>
+        <p>Scanned Results:</p>
+        <textarea id="scanned-results" rows="10" readonly></textarea>
+        <button id="clear-results">Clear</button>
+        <button id="copy-results">Copy</button>
+        <p id="error-message" class="error-message"></p>
+    </div>
+    <label>Select Camera:</label>
+    <select id="sourceSelect"></select>
+
+    <audio id="scan-sound" src="http://185.148.147.116/barcode.wav" preload="auto"></audio>
+
+    <a href="index.html">Back to Main Page</a>
+
+<script>
+    const videoElement = document.getElementById('qr-video');
+    const outputElement = document.getElementById('scanned-results');
+    const sourceSelect = document.getElementById('sourceSelect');
+    const zoomSlider = document.getElementById('zoom-slider');
+    const autoZoomCheckbox = document.getElementById('auto-zoom-checkbox');
+    const torchCheckbox = document.getElementById('torch-checkbox');
+    const errorMessage = document.getElementById('error-message');
+    const scanSound = document.getElementById('scan-sound');
+    const codeReader = new ZXing.BrowserMultiFormatReader();
+    let currentStream;
+    let zoomValue = 3;
+    let autoZoomInterval;
+
+    function stopMediaTracks(stream) {
+        stream.getTracks().forEach(track => track.stop());
+    }
+
+    function getMediaStream(deviceId, zoomValue) {
+        if (currentStream) stopMediaTracks(currentStream);
+
+        navigator.mediaDevices.getUserMedia({
+            video: { deviceId: deviceId, advanced: [{ zoom: zoomValue }] }
+        }).then(stream => {
+            currentStream = stream;
+            videoElement.srcObject = stream;
+            videoElement.play();
+            enableTorch(stream, torchCheckbox.checked);
+            errorMessage.textContent = "";
+
+            if (!autoZoomCheckbox.checked) {
+                startDecoding(deviceId); // Start decoding if auto-adjust zoom is not active
+            }
+        }).catch(error => {
+            console.error('Error accessing media devices.', error);
+            errorMessage.textContent = "Unable to access the camera. Please check permissions.";
+        });
+    }
+
+    function enableTorch(stream, enable) {
+        const videoTrack = stream.getVideoTracks()[0];
+        if (videoTrack?.getCapabilities()?.torch) {
+            videoTrack.applyConstraints({ advanced: [{ torch: enable }] }).catch(error => {
+                console.error('Error toggling torch:', error);
+                errorMessage.textContent = "Torch functionality is not supported on this device.";
+            });
+        } else {
+            errorMessage.textContent = "Torch functionality is not supported on this device.";
+        }
+    }
+
+    function startDecoding(deviceId) {
+        codeReader.decodeFromVideoDevice(deviceId, 'qr-video', (result, error) => {
+            if (result) {
+                if ((result.text.length === 13 || result.text.length === 15) &&
+                    !outputElement.value.includes(result.text)) {
+                    outputElement.value = result.text + '\n' + outputElement.value;
+                    playScanSound();
+                }
+            }
+        });
+    }
+
+    function playScanSound() {
+        scanSound.play().catch(err => console.error('Error playing scan sound:', err));
+    }
+
+    function autoAdjustZoom(deviceId) {
+        let zoomLevel = 1;
+        clearInterval(autoZoomInterval);
+
+        autoZoomInterval = setInterval(() => {
+            if (!autoZoomCheckbox.checked) {
+                clearInterval(autoZoomInterval);
+                getMediaStream(deviceId, zoomValue); // Reset to default zoom
+                return;
+            }
+
+            getMediaStream(deviceId, zoomLevel);
+            codeReader.decodeFromVideoDevice(deviceId, 'qr-video', (result, error) => {
+                if (result) {
+                    if ((result.text.length === 13 || result.text.length === 15) &&
+                        !outputElement.value.includes(result.text)) {
+                        outputElement.value = result.text + '\n' + outputElement.value;
+                        playScanSound();
+                        clearInterval(autoZoomInterval); // Stop adjusting zoom once QR is read
+                    }
+                } else if (zoomLevel < 7) {
+                    zoomLevel += 0.1;
+                } else {
+                    clearInterval(autoZoomInterval); // Stop if maximum zoom is reached
+                }
+            });
+        }, 500); // Adjust every 500ms
+    }
+
+    torchCheckbox.addEventListener('change', () => {
+        if (currentStream) enableTorch(currentStream, torchCheckbox.checked);
+    });
+
+    zoomSlider.addEventListener('change', () => {
+        zoomValue = zoomSlider.value;
+        getMediaStream(sourceSelect.value, zoomValue);
+    });
+
+    autoZoomCheckbox.addEventListener('change', () => {
+        if (autoZoomCheckbox.checked) {
+            autoAdjustZoom(sourceSelect.value);
+        } else {
+            clearInterval(autoZoomInterval);
+            getMediaStream(sourceSelect.value, zoomValue); // Reset to default zoom
+        }
+    });
+
+    codeReader.getVideoInputDevices().then(videoInputDevices => {
+        let defaultDeviceId;
+
+        videoInputDevices.sort((a, b) => a.label.localeCompare(b.label));
+
+        videoInputDevices.forEach(device => {
+            const option = document.createElement('option');
+            option.text = device.label;
+            option.value = device.deviceId;
+            sourceSelect.appendChild(option);
+
+            if (device.label.includes('camera2 0')) {
+                defaultDeviceId = device.deviceId;
+            }
+        });
+
+        const deviceIdToUse = defaultDeviceId || videoInputDevices[0]?.deviceId;
+        sourceSelect.value = deviceIdToUse;
+
+        getMediaStream(deviceIdToUse, zoomValue);
+
+        sourceSelect.addEventListener('change', () => {
+            codeReader.reset();
+            zoomValue = 3;
+            getMediaStream(sourceSelect.value, zoomValue);
+        });
+    }).catch(error => {
+        console.error(error);
+        errorMessage.textContent = "Unable to access camera devices. Please check your device settings.";
+    });
+
+    document.getElementById('clear-results').addEventListener('click', () => {
+        outputElement.value = '';
+    });
+
+    document.getElementById('copy-results').addEventListener('click', () => {
+        outputElement.select();
+        document.execCommand('copy');
+    });
+</script>
+
+</body>
+
+</html>
